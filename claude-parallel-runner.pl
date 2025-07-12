@@ -112,7 +112,7 @@ sub run_claude_parallel {
             my $prompt_text = $prompt_obj->{prompt};
             my $transaction_id = $prompt_obj->{id};
             
-            print "Starting task $task_num (ID: " . substr($transaction_id, 0, 8) . "...): " . substr($prompt_text, 0, 40);
+            print "Starting task $task_num (ID: $transaction_id): " . substr($prompt_text, 0, 40);
             print "..." if length($prompt_text) > 40;
             print "\n";
             
