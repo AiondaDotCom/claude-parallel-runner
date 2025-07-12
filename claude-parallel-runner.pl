@@ -146,8 +146,7 @@ sub run_claude_parallel {
                 @running_pids = grep { 
                     if ($_->{pid} == $finished_pid) {
                         $duration -= $_->{start_time};
-                        my $short_id = substr($_->{transaction_id}, 0, 8);
-                        print "Task $_->{task_num} (ID: $short_id...) completed in ${duration}s with exit code $exit_code\n";
+                        print "Task $_->{task_num} (ID: $_->{transaction_id}) completed in ${duration}s with exit code $exit_code\n";
                         
                         $results{$finished_pid} = {
                             exit_code => $exit_code,
@@ -183,12 +182,10 @@ sub wait_for_completion {
         my $success = $exit_code == 0;
         my $transaction_id = $results{$pid}->{transaction_id};
         my $task_num = $results{$pid}->{task_num};
-        my $short_id = substr($transaction_id, 0, 8);
-        
         $all_success = 0 if $exit_code != 0;
         
         my $status_msg = $success ? "SUCCESS" : "FAILED";
-        print "[$completed/$total_tasks] Task $task_num (ID: $short_id...) Process $pid: $status_msg\n";
+        print "[$completed/$total_tasks] Task $task_num (ID: $transaction_id) Process $pid: $status_msg\n";
     }
     
     return ($all_success, $results_ref);
@@ -261,8 +258,7 @@ sub main {
             my $prompt_obj = $prompts->[$i];
             my $preview = substr($prompt_obj->{prompt}, 0, 50);
             $preview .= "..." if length($prompt_obj->{prompt}) > 50;
-            my $short_id = substr($prompt_obj->{id}, 0, 8);
-            print "  " . ($i + 1) . " (ID: $short_id...): $preview\n";
+            print "  " . ($i + 1) . " (ID: $prompt_obj->{id}): $preview\n";
         }
         print "\n";
     }
