@@ -1,0 +1,7 @@
+{
+    "prompts": [
+        "List all files in the current directory and explain what each file does",
+        "Check if there are any TODO comments in the codebase and summarize them",
+        "Analyze the project structure and suggest improvements"
+    ]
+}
