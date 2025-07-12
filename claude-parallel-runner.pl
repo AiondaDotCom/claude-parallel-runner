@@ -9,6 +9,16 @@ use Pod::Usage;
 
 our $VERSION = '1.0.0';
 
+sub generate_uuid {
+    my @chars = ('0'..'9', 'a'..'f');
+    my $uuid = '';
+    for my $i (0..31) {
+        $uuid .= $chars[rand @chars];
+        $uuid .= '-' if $i == 7 || $i == 11 || $i == 15 || $i == 19;
+    }
+    return $uuid;
+}
+
 sub read_input {
     my ($file_path) = @_;
     my $input;
@@ -46,7 +56,29 @@ sub read_input {
         die "The 'prompts' field must be an array\n";
     }
     
-    return $data->{prompts};
+    # Convert prompts to standardized format with IDs
+    my @processed_prompts;
+    
+    for my $prompt (@{$data->{prompts}}) {
+        if (ref $prompt eq 'HASH') {
+            # Prompt is already an object
+            unless (exists $prompt->{prompt}) {
+                die "Prompt objects must contain a 'prompt' field\n";
+            }
+            $prompt->{id} ||= generate_uuid();
+            push @processed_prompts, $prompt;
+        } elsif (!ref $prompt) {
+            # Prompt is a simple string
+            push @processed_prompts, {
+                id => generate_uuid(),
+                prompt => $prompt
+            };
+        } else {
+            die "Prompts must be strings or objects with 'prompt' field\n";
+        }
+    }
+    
+    return \@processed_prompts;
 }
 
 sub validate_claude_command {
@@ -62,7 +94,7 @@ sub validate_claude_command {
 
 sub run_claude_parallel {
     my ($prompts, $options) = @_;
-    my @pids;
+    my %results;
     my $max_parallel = $options->{max_parallel} || scalar(@$prompts);
     my $batch_size = $max_parallel < scalar(@$prompts) ? $max_parallel : scalar(@$prompts);
     
@@ -75,26 +107,29 @@ sub run_claude_parallel {
     
     while ($prompt_index < scalar(@$prompts) || @running_pids) {
         while (@running_pids < $max_parallel && $prompt_index < scalar(@$prompts)) {
-            my $prompt = $prompts->[$prompt_index];
+            my $prompt_obj = $prompts->[$prompt_index];
             my $task_num = $prompt_index + 1;
+            my $prompt_text = $prompt_obj->{prompt};
+            my $transaction_id = $prompt_obj->{id};
             
-            print "Starting task $task_num: " . substr($prompt, 0, 50);
-            print "..." if length($prompt) > 50;
+            print "Starting task $task_num (ID: " . substr($transaction_id, 0, 8) . "...): " . substr($prompt_text, 0, 40);
+            print "..." if length($prompt_text) > 40;
             print "\n";
             
             my $pid = fork();
             if ($pid == 0) {
-                my @cmd = ('claude', '-p', $prompt, '--dangerously-skip-permissions');
+                my $enhanced_prompt = "Transaction ID: $transaction_id\n\n$prompt_text\n\nPlease start your response with: [ID: $transaction_id]";
+                my @cmd = ('claude', '-p', $enhanced_prompt, '--dangerously-skip-permissions');
                 exec(@cmd);
                 die "exec failed: $!\n";
             } elsif ($pid > 0) {
                 push @running_pids, {
                     pid => $pid,
                     task_num => $task_num,
-                    prompt => $prompt,
+                    prompt => $prompt_text,
+                    transaction_id => $transaction_id,
                     start_time => time()
                 };
-                push @pids, $pid;
             } else {
                 die "fork failed: $!\n";
             }
@@ -111,7 +146,16 @@ sub run_claude_parallel {
                 @running_pids = grep { 
                     if ($_->{pid} == $finished_pid) {
                         $duration -= $_->{start_time};
-                        print "Task $_->{task_num} completed in ${duration}s with exit code $exit_code\n";
+                        my $short_id = substr($_->{transaction_id}, 0, 8);
+                        print "Task $_->{task_num} (ID: $short_id...) completed in ${duration}s with exit code $exit_code\n";
+                        
+                        $results{$finished_pid} = {
+                            exit_code => $exit_code,
+                            success => $exit_code == 0,
+                            transaction_id => $_->{transaction_id},
+                            task_num => $_->{task_num}
+                        };
+                        
                         0;
                     } else {
                         1;
@@ -121,35 +165,33 @@ sub run_claude_parallel {
         }
     }
     
-    return @pids;
+    return \%results;
 }
 
 sub wait_for_completion {
-    my (@pids) = @_;
-    my %results;
+    my ($results_ref) = @_;
+    my %results = %$results_ref;
     my $all_success = 1;
-    my $total_tasks = scalar(@pids);
+    my $total_tasks = scalar(keys %results);
     my $completed = 0;
     
-    print "\nWaiting for all tasks to complete...\n";
+    print "\nAll tasks completed.\n";
     
-    for my $pid (@pids) {
-        my $status = waitpid($pid, 0);
-        my $exit_code = $? >> 8;
+    for my $pid (sort keys %results) {
         $completed++;
-        
-        $results{$pid} = {
-            exit_code => $exit_code,
-            success => $exit_code == 0
-        };
+        my $exit_code = $results{$pid}->{exit_code};
+        my $success = $exit_code == 0;
+        my $transaction_id = $results{$pid}->{transaction_id};
+        my $task_num = $results{$pid}->{task_num};
+        my $short_id = substr($transaction_id, 0, 8);
         
         $all_success = 0 if $exit_code != 0;
         
-        my $status_msg = $exit_code == 0 ? "SUCCESS" : "FAILED";
-        print "[$completed/$total_tasks] Process $pid: $status_msg\n";
+        my $status_msg = $success ? "SUCCESS" : "FAILED";
+        print "[$completed/$total_tasks] Task $task_num (ID: $short_id...) Process $pid: $status_msg\n";
     }
     
-    return ($all_success, \%results);
+    return ($all_success, $results_ref);
 }
 
 sub print_summary {
@@ -216,9 +258,11 @@ sub main {
     if ($options{verbose}) {
         print "Loaded " . scalar(@$prompts) . " prompts:\n";
         for my $i (0 .. $#$prompts) {
-            my $preview = substr($prompts->[$i], 0, 60);
-            $preview .= "..." if length($prompts->[$i]) > 60;
-            print "  " . ($i + 1) . ": $preview\n";
+            my $prompt_obj = $prompts->[$i];
+            my $preview = substr($prompt_obj->{prompt}, 0, 50);
+            $preview .= "..." if length($prompt_obj->{prompt}) > 50;
+            my $short_id = substr($prompt_obj->{id}, 0, 8);
+            print "  " . ($i + 1) . " (ID: $short_id...): $preview\n";
         }
         print "\n";
     }
@@ -226,10 +270,10 @@ sub main {
     my $start_time = time();
     
     eval {
-        my @pids = run_claude_parallel($prompts, \%options);
-        my ($success, $results) = wait_for_completion(@pids);
+        my $results = run_claude_parallel($prompts, \%options);
+        my ($success, $final_results) = wait_for_completion($results);
         
-        print_summary($success, $results, $start_time);
+        print_summary($success, $final_results, $start_time);
         
         if ($success) {
             print "\nAll Claude instances completed successfully!\n";

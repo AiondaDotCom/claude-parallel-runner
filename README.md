@@ -25,8 +25,8 @@ A Perl script that executes multiple Claude Code instances in parallel, allowing
 # Run from JSON file
 claude-parallel-runner example-prompts.json
 
-# Run from STDIN
-echo '{"prompts":["task1","task2"]}' | claude-parallel-runner
+# Run from STDIN  
+echo '{"prompts":["What is 5+5?","What is the capital of France?"]}' | claude-parallel-runner
 
 # With limited parallelism
 claude-parallel-runner --max-parallel=3 example-prompts.json
