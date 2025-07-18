@@ -6,6 +6,8 @@ use JSON;
 use POSIX ":sys_wait_h";
 use Getopt::Long;
 use Pod::Usage;
+use File::Spec;
+use Cwd;
 
 our $VERSION = '1.0.0';
 
@@ -92,11 +94,74 @@ sub validate_claude_command {
     return $claude_path;
 }
 
+sub get_current_branch {
+    my $branch = `git rev-parse --abbrev-ref HEAD 2>/dev/null`;
+    chomp $branch;
+    
+    unless ($branch && $branch ne 'HEAD') {
+        die "Not in a Git repository or detached HEAD state.\n";
+    }
+    
+    return $branch;
+}
+
+sub create_worktree_branch {
+    my ($base_branch, $task_id, $worktree_base) = @_;
+    
+    my $branch_name = "${base_branch}-task-${task_id}";
+    my $worktree_path = File::Spec->catdir($worktree_base, "task-${task_id}");
+    
+    # Create worktree with new branch
+    my $cmd = "git worktree add \"$worktree_path\" -b \"$branch_name\" 2>/dev/null";
+    my $result = system($cmd);
+    
+    if ($result != 0) {
+        die "Failed to create worktree for task $task_id: $!\n";
+    }
+    
+    return ($branch_name, $worktree_path);
+}
+
+sub cleanup_worktree {
+    my ($worktree_path, $branch_name) = @_;
+    
+    # Remove worktree
+    system("git worktree remove \"$worktree_path\" --force 2>/dev/null");
+    
+    # Clean up any remaining directory using /bin/rm
+    if (-d $worktree_path) {
+        system("/bin/rm -rf \"$worktree_path\" 2>/dev/null");
+    }
+    
+    # Optionally remove branch (commented out - let main AI decide)
+    # system("git branch -D \"$branch_name\" 2>/dev/null");
+}
+
 sub run_claude_parallel {
     my ($prompts, $options) = @_;
     my %results;
     my $max_parallel = $options->{max_parallel} || scalar(@$prompts);
     my $batch_size = $max_parallel < scalar(@$prompts) ? $max_parallel : scalar(@$prompts);
+    
+    # Git worktree setup
+    my $use_worktree = $options->{use_worktree} || 0;
+    my $base_branch = '';
+    my $original_cwd = '';
+    my $worktree_base = '';
+    
+    if ($use_worktree) {
+        $base_branch = get_current_branch();
+        $original_cwd = getcwd();
+        $worktree_base = File::Spec->catdir($original_cwd, '..', 'claude-worktrees');
+        
+        # Create worktree base directory if it doesn't exist
+        unless (-d $worktree_base) {
+            mkdir $worktree_base or die "Cannot create worktree base directory: $!\n";
+        }
+        
+        print "Using git worktree mode from branch: $base_branch\n";
+        print "Worktree base: $worktree_base\n";
+    }
     
     print "Starting " . scalar(@$prompts) . " Claude instances";
     print " (max $max_parallel parallel)" if $max_parallel < scalar(@$prompts);
@@ -116,9 +181,41 @@ sub run_claude_parallel {
             print "..." if length($prompt_text) > 40;
             print "\n";
             
+            my $branch_name = '';
+            my $worktree_path = '';
+            
+            my $task_use_worktree = $use_worktree;
+            if ($task_use_worktree) {
+                eval {
+                    ($branch_name, $worktree_path) = create_worktree_branch($base_branch, $transaction_id, $worktree_base);
+                    print "Created worktree branch: $branch_name at $worktree_path\n";
+                };
+                if ($@) {
+                    warn "Failed to create worktree for task $task_num: $@";
+                    print "Falling back to main repository execution\n";
+                    $task_use_worktree = 0;
+                }
+            }
+            
             my $pid = fork();
             if ($pid == 0) {
-                my $enhanced_prompt = "Transaction ID: $transaction_id\n\n$prompt_text\n\nPlease start your response with: [ID: $transaction_id]";
+                # Change to worktree directory if using worktree
+                if ($task_use_worktree && $worktree_path) {
+                    chdir($worktree_path) or die "Cannot change to worktree directory: $!\n";
+                    print "Working in worktree: $worktree_path\n";
+                }
+                
+                my $enhanced_prompt = "Transaction ID: $transaction_id\n";
+                if ($task_use_worktree && $branch_name) {
+                    $enhanced_prompt .= "Working Branch: $branch_name\n";
+                    $enhanced_prompt .= "Git Worktree: $worktree_path\n";
+                    $enhanced_prompt .= "\nYou are working in a separate git worktree. Please commit your changes before completing the task.\n";
+                }
+                $enhanced_prompt .= "\n$prompt_text\n\nPlease start your response with: [ID: $transaction_id]";
+                if ($task_use_worktree && $branch_name) {
+                    $enhanced_prompt .= " [BRANCH: $branch_name]";
+                }
+                
                 my @cmd = ('claude', '-p', $enhanced_prompt, '--dangerously-skip-permissions');
                 exec(@cmd);
                 die "exec failed: $!\n";
@@ -128,7 +225,9 @@ sub run_claude_parallel {
                     task_num => $task_num,
                     prompt => $prompt_text,
                     transaction_id => $transaction_id,
-                    start_time => time()
+                    start_time => time(),
+                    branch_name => $branch_name,
+                    worktree_path => $worktree_path
                 };
             } else {
                 die "fork failed: $!\n";
@@ -148,11 +247,24 @@ sub run_claude_parallel {
                         $duration -= $_->{start_time};
                         print "Task $_->{task_num} (ID: $_->{transaction_id}) completed in ${duration}s with exit code $exit_code\n";
                         
+                        my $branch_result = '';
+                        if ($_->{branch_name}) {
+                            $branch_result = $_->{branch_name};
+                            print "Branch available for merge: $branch_result\n";
+                            
+                            # Cleanup worktree but keep branch
+                            if ($_->{worktree_path}) {
+                                cleanup_worktree($_->{worktree_path}, $_->{branch_name});
+                                print "Cleaned up worktree: $_->{worktree_path}\n";
+                            }
+                        }
+                        
                         $results{$finished_pid} = {
                             exit_code => $exit_code,
                             success => $exit_code == 0,
                             transaction_id => $_->{transaction_id},
-                            task_num => $_->{task_num}
+                            task_num => $_->{task_num},
+                            branch_name => $branch_result
                         };
                         
                         0;
@@ -182,17 +294,19 @@ sub wait_for_completion {
         my $success = $exit_code == 0;
         my $transaction_id = $results{$pid}->{transaction_id};
         my $task_num = $results{$pid}->{task_num};
+        my $branch_name = $results{$pid}->{branch_name} || '';
         $all_success = 0 if $exit_code != 0;
         
         my $status_msg = $success ? "SUCCESS" : "FAILED";
-        print "[$completed/$total_tasks] Task $task_num (ID: $transaction_id) Process $pid: $status_msg\n";
+        my $branch_info = $branch_name ? " [BRANCH: $branch_name]" : "";
+        print "[$completed/$total_tasks] Task $task_num (ID: $transaction_id) Process $pid: $status_msg$branch_info\n";
     }
     
     return ($all_success, $results_ref);
 }
 
 sub print_summary {
-    my ($success, $results, $start_time) = @_;
+    my ($success, $results, $start_time, $use_worktree) = @_;
     my $duration = time() - $start_time;
     my $total = scalar(keys %$results);
     my $successful = grep { $_->{success} } values %$results;
@@ -207,6 +321,37 @@ sub print_summary {
     print "Total time: ${duration}s\n";
     print "Overall status: " . ($success ? "SUCCESS" : "FAILED") . "\n";
     print "=" x 50 . "\n";
+    
+    # Add merge instructions for AI if using worktree mode
+    if ($use_worktree && $successful > 0) {
+        my @successful_branches = grep { $_->{success} && $_->{branch_name} } values %$results;
+        
+        if (@successful_branches) {
+            print "\n" . "🤖 AI MERGE INSTRUCTIONS\n";
+            print "=" x 50 . "\n";
+            print "The following branches are ready for merging:\n\n";
+            
+            for my $result (@successful_branches) {
+                print "  • $result->{branch_name}\n";
+            }
+            
+            print "\nTo merge these branches, run:\n";
+            for my $result (@successful_branches) {
+                print "  git merge $result->{branch_name}\n";
+            }
+            
+            print "\nOr to merge all successful branches at once:\n";
+            my $branch_list = join(' ', map { $_->{branch_name} } @successful_branches);
+            print "  git merge $branch_list\n";
+            
+            print "\nAfter merging, you can clean up the branches with:\n";
+            for my $result (@successful_branches) {
+                print "  git branch -d $result->{branch_name}\n";
+            }
+            
+            print "\n" . "=" x 50 . "\n";
+        }
+    }
 }
 
 sub show_help {
@@ -219,6 +364,7 @@ sub main {
         version => 0,
         max_parallel => 0,
         verbose => 0,
+        use_worktree => 0,
     );
     
     GetOptions(
@@ -226,6 +372,7 @@ sub main {
         'version|v'      => \$options{version},
         'max-parallel=i' => \$options{max_parallel},
         'verbose'        => \$options{verbose},
+        'worktree'       => \$options{use_worktree},
     ) or pod2usage(2);
     
     if ($options{help}) {
@@ -239,6 +386,16 @@ sub main {
     }
     
     validate_claude_command();
+    
+    # Check if we're in a git repository and recommend worktree mode
+    unless ($options{use_worktree}) {
+        my $is_git_repo = system("git rev-parse --git-dir >/dev/null 2>&1") == 0;
+        if ($is_git_repo) {
+            print "💡 Recommendation: You are in a git repository. Consider using --worktree flag for isolated task execution.\n";
+            print "   This prevents conflicts and makes branch management easier.\n";
+            print "   Usage: $0 --worktree [other options] [input_file]\n\n";
+        }
+    }
     
     my $prompts;
     eval {
@@ -269,7 +426,7 @@ sub main {
         my $results = run_claude_parallel($prompts, \%options);
         my ($success, $final_results) = wait_for_completion($results);
         
-        print_summary($success, $final_results, $start_time);
+        print_summary($success, $final_results, $start_time, $options{use_worktree});
         
         if ($success) {
             print "\nAll Claude instances completed successfully!\n";
@@ -323,6 +480,12 @@ Default: run all prompts in parallel.
 
 Enable verbose output showing loaded prompts and additional information.
 
+=item B<--worktree>
+
+Enable git worktree mode. Each task will be executed in a separate git worktree
+with its own branch following the pattern: original_branch/task-uuid.
+This allows for isolated development and easy branch management.
+
 =back
 
 =head1 INPUT FORMAT
@@ -357,6 +520,14 @@ The input must be a JSON object with a "prompts" array:
 
     ./claude-parallel-runner.pl --verbose prompts.json
 
+=item B<With git worktree mode:>
+
+    ./claude-parallel-runner.pl --worktree prompts.json
+
+=item B<Combined options:>
+
+    ./claude-parallel-runner.pl --worktree --max-parallel=2 --verbose prompts.json
+
 =back
 
 =head1 EXIT CODES
@@ -386,6 +557,8 @@ Input/validation error or Claude CLI not found
 =item * Perl with JSON module
 
 =item * Unix-like system with fork() support
+
+=item * Git (required for --worktree mode)
 
 =back
 
