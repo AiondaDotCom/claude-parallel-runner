@@ -4,35 +4,57 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Perl-based tool for executing multiple Claude Code instances in parallel. The main script (`claude-parallel-runner.pl`) reads JSON-formatted prompts and executes them concurrently using process forking.
+This is a Perl-based tool for executing multiple Claude Code instances in parallel with **asynchronous session management**. The main script (`claude-parallel-runner.pl`) reads JSON-formatted prompts and executes them concurrently in the background, solving the Claude Code 2-minute timeout limitation.
 
 ## Key Architecture
 
-- **Main Script**: `claude-parallel-runner.pl` - Core Perl script that handles parallel execution
+- **Main Script**: `claude-parallel-runner.pl` - Core Perl script with async session management
+- **Async by Default**: All executions run in background, returning session IDs immediately
+- **Session Management**: Each execution creates a persistent session with UUID tracking
 - **Process Management**: Uses Unix `fork()` for creating child processes, each running a separate Claude instance
-- **Input/Output**: Accepts JSON input from files or STDIN with a `prompts` array structure
-- **Transaction Tracking**: Each prompt gets a unique UUID for tracking and identification
-- **Resource Control**: Optional `--max-parallel` flag to limit concurrent processes
+- **Persistent Storage**: Results stored in `./results/session-UUID/` directories
+- **Status Tracking**: Real-time status updates via JSON files
 - **Git Worktree Integration**: Optional `--worktree` flag creates isolated git branches for each task
 
 ## Common Commands
 
-### Running the Tool
+### Basic Execution (Async by Default)
 ```bash
-# Basic usage with JSON file
+# Start async session (returns immediately with session ID)
 ./claude-parallel-runner.pl example-prompts.json
 
-# From STDIN
+# From STDIN - starts background session
 echo '{"prompts":["task1","task2"]}' | ./claude-parallel-runner.pl
 
-# With limited parallelism
+# Force synchronous execution (original behavior)
+./claude-parallel-runner.pl --sync example-prompts.json
+```
+
+### Session Management
+```bash
+# Check status of specific session
+./claude-parallel-runner.pl --status SESSION_ID
+
+# View results of completed session
+./claude-parallel-runner.pl --results SESSION_ID
+
+# List all sessions (running and completed)
+./claude-parallel-runner.pl --list
+
+# Show overview statistics of all sessions
+./claude-parallel-runner.pl --overview
+```
+
+### Advanced Options
+```bash
+# Limit parallel processes within a session
 ./claude-parallel-runner.pl --max-parallel=3 example-prompts.json
 
-# Verbose output
-./claude-parallel-runner.pl --verbose example-prompts.json
-
-# With git worktree isolation
+# Use git worktree isolation (recommended for code tasks)
 ./claude-parallel-runner.pl --worktree example-prompts.json
+
+# Verbose output with session details
+./claude-parallel-runner.pl --verbose example-prompts.json
 
 # Combined options
 ./claude-parallel-runner.pl --worktree --max-parallel=2 --verbose example-prompts.json
@@ -49,6 +71,21 @@ perl -d claude-parallel-runner.pl example-prompts.json
 # Test JSON parsing
 perl -MJSON -e 'print decode_json(`cat example-prompts.json`)->{prompts}->[0]'
 ```
+
+## Session Workflow
+
+### Typical Usage Pattern
+1. **Start Session**: Execute prompts file → Get session ID immediately
+2. **Monitor Progress**: Use `--status SESSION_ID` to check progress
+3. **View Results**: Use `--results SESSION_ID` when tasks complete
+4. **Manage Sessions**: Use `--list` and `--overview` for session management
+
+### Benefits of Async Design
+- **No Timeout Issues**: Claude Code caller doesn't wait, eliminating 2-minute timeouts
+- **Long-Running Tasks**: Tasks can run for hours without interruption
+- **Multiple Sessions**: Run many different task sets concurrently
+- **Persistent Results**: All outputs saved and retrievable anytime
+- **Status Monitoring**: Real-time progress tracking
 
 ## Input Format
 
@@ -67,11 +104,23 @@ JSON structure required:
 
 ## Core Functions
 
+### Session Management
+- `generate_session_id()`: Creates unique session identifiers
+- `create_session_dir()`: Sets up persistent session storage
+- `update_session_status()`: Real-time status updates
+- `get_session_status()`: Retrieves current session state
+- `list_all_sessions()`: Shows all sessions with status
+- `show_overview()`: Global statistics across all sessions
+
+### Execution Engine
+- `run_claude_parallel_async()`: Async execution with result persistence
+- `run_claude_parallel()`: Synchronous execution (legacy mode)
+- `wait_for_completion_async()`: Non-blocking completion handling
 - `read_input()`: Parses JSON from file or STDIN, validates structure
-- `run_claude_parallel()`: Main execution engine with fork-based parallelism
 - `generate_uuid()`: Creates unique identifiers for transaction tracking
 - `validate_claude_command()`: Ensures Claude CLI is available
-- `wait_for_completion()`: Monitors child processes and collects results
+
+### Git Integration
 - `get_current_branch()`: Retrieves current git branch for worktree naming
 - `create_worktree_branch()`: Creates isolated git worktree with branch naming pattern
 - `cleanup_worktree()`: Removes worktree directory while preserving branch

@@ -1,191 +1,294 @@
 # Claude Parallel Runner
 
-A Perl script that executes multiple Claude Code instances in parallel, allowing you to process multiple prompts simultaneously and efficiently.
+A Perl-based tool for executing multiple Claude Code instances in parallel with **asynchronous session management**. Designed to solve Claude Code's 2-minute timeout limitation by running tasks in the background with persistent result storage.
 
-## Features
+## 🚀 Key Features
 
-- **Parallel Execution**: Run multiple Claude Code instances simultaneously
-- **Flexible Input**: Accept prompts from JSON files or STDIN
-- **Process Management**: Monitor all processes and wait for completion
-- **Error Handling**: Comprehensive validation and error reporting
-- **Progress Monitoring**: Real-time status updates and execution summary
-- **Resource Control**: Optional limit on maximum parallel processes
+- **Async by Default**: All executions run in background, returning session IDs immediately
+- **No Timeout Issues**: Tasks can run for hours without Claude Code timeouts
+- **Parallel Execution**: Multiple Claude instances run simultaneously within each session
+- **Session Management**: Track multiple sessions with persistent storage
 - **Git Worktree Integration**: Isolated development environments for each task
+- **Real-time Status**: Monitor progress and view results anytime
+- **Flexible Input**: JSON from files or STDIN
 
-## Installation
+## 📋 Requirements
 
-1. Ensure Claude Code CLI is installed and available in your PATH
-2. Make sure Perl with JSON module is available
-3. The script is already executable and linked to `/Users/saf/bin/claude-parallel-runner`
+- **Claude Code CLI** must be installed and available in PATH
+- **Perl** with JSON module
+- **Unix-like system** with fork() support
+- **Git** (required for --worktree mode)
 
-## Usage
+## 🏁 Quick Start
 
-### Basic Usage
+### 1. Basic Usage
 
 ```bash
-# Run from JSON file
-claude-parallel-runner example-prompts.json
+# Start async session (returns immediately)
+./claude-parallel-runner.pl prompts.json
 
-# Run from STDIN  
-echo '{"prompts":["What is 5+5?","What is the capital of France?"]}' | claude-parallel-runner
-
-# With limited parallelism
-claude-parallel-runner --max-parallel=3 example-prompts.json
-
-# Verbose output
-claude-parallel-runner --verbose example-prompts.json
-
-# With git worktree isolation
-claude-parallel-runner --worktree example-prompts.json
-
-# Combined options
-claude-parallel-runner --worktree --max-parallel=2 --verbose example-prompts.json
+# From STDIN
+echo '{"prompts":["Create a web app","Write tests"]}' | ./claude-parallel-runner.pl
 ```
 
-### Input Format
+### 2. Monitor Sessions
 
-The input must be a JSON object with a "prompts" array:
+```bash
+# Check specific session status
+./claude-parallel-runner.pl --status SESSION_ID
+
+# View completed results
+./claude-parallel-runner.pl --results SESSION_ID
+
+# List all sessions
+./claude-parallel-runner.pl --list
+
+# Show overview statistics
+./claude-parallel-runner.pl --overview
+```
+
+### 3. Input Format
+
+Create a JSON file with your prompts:
 
 ```json
 {
     "prompts": [
-        "Analyze the config.js file and suggest improvements",
-        "Write unit tests for the auth.js file", 
-        "Refactor utils.js for better readability"
+        "Create a calculator web app",
+        "Write unit tests for the calculator",
+        {
+            "id": "custom-uuid",
+            "prompt": "Add documentation"
+        }
     ]
 }
 ```
 
-### Command Line Options
+## 📚 Command Reference
 
-- `-h, --help` - Show help message
-- `-v, --version` - Show version information  
-- `--max-parallel=N` - Limit parallel processes (default: unlimited)
-- `--verbose` - Enable detailed output
-- `--worktree` - Enable git worktree mode for isolated task execution
+### Execution Modes
 
-## How It Works
+| Command | Description |
+|---------|-------------|
+| `./claude-parallel-runner.pl file.json` | **Default**: Start async session |
+| `./claude-parallel-runner.pl --sync file.json` | Synchronous execution (original behavior) |
 
-1. **Input Parsing**: Reads JSON from file or STDIN and validates format
-2. **Process Forking**: Creates child processes using `fork()` for each prompt
-3. **Git Worktree Setup** (optional): Creates isolated branches and directories
-4. **Claude Execution**: Each child executes `claude -p "prompt" --dangerously-skip-permissions`
-5. **Completion Monitoring**: Parent process monitors exit codes using `waitpid()`
-6. **Result Aggregation**: Collects all results and provides summary
+### Session Management
 
-## Git Worktree Mode
+| Command | Description |
+|---------|-------------|
+| `--status SESSION_ID` | Show detailed status of specific session |
+| `--results SESSION_ID` | View all task results from session |
+| `--list` | List all sessions with status and progress |
+| `--overview` | Show statistics across all sessions |
 
-When using the `--worktree` flag, the runner creates isolated development environments:
+### Advanced Options
 
-### Branch Naming Pattern
-- Format: `{original_branch}-task-{uuid}`
-- Examples:
-  - From `main`: `main-task-a1b2c3d4-e5f6-7890-abcd-ef1234567890`
-  - From `feature-auth`: `feature-auth-task-a1b2c3d4-e5f6-7890-abcd-ef1234567890`
+| Command | Description |
+|---------|-------------|
+| `--max-parallel=N` | Limit concurrent Claude instances (default: unlimited) |
+| `--worktree` | Use git worktree isolation for each task |
+| `--verbose` | Show detailed execution information |
+| `--help` | Show detailed help documentation |
 
-### Workflow
-1. **Creation**: Each task gets a separate worktree directory and branch
-2. **Execution**: Claude works in isolation with full git history
-3. **Completion**: Worktree is cleaned up, branch remains for merging
-4. **Integration**: Branch names are returned for main AI to merge
+## 🔄 Session Workflow
 
-### Benefits
-- **Isolation**: No conflicts between parallel tasks
+### Typical Usage Pattern
+
+1. **Start Session**
+   ```bash
+   ./claude-parallel-runner.pl tasks.json
+   # 🚀 Started session: abc123...
+   ```
+
+2. **Monitor Progress**
+   ```bash
+   ./claude-parallel-runner.pl --status abc123
+   # Session: abc123 [running]
+   # Tasks: 2/5 completed
+   ```
+
+3. **View Results**
+   ```bash
+   ./claude-parallel-runner.pl --results abc123
+   # Shows all task outputs
+   ```
+
+4. **Manage Sessions**
+   ```bash
+   ./claude-parallel-runner.pl --list
+   # Shows all sessions with status
+   ```
+
+## 🌿 Git Worktree Integration
+
+The `--worktree` flag creates isolated development environments:
+
+```bash
+./claude-parallel-runner.pl --worktree coding-tasks.json
+```
+
+**Benefits:**
+- **Isolation**: Each task works in separate git branch
+- **No Conflicts**: Parallel tasks don't interfere
 - **Traceability**: Each branch tied to specific task UUID
-- **Safety**: Main branch untouched during execution
-- **Team-friendly**: Multiple developers can work from different base branches
-- **AI Integration**: Provides merge instructions for automated workflow orchestration
+- **Easy Merging**: Successful branches ready for integration
+
+**Branch Naming Pattern:**
+- Format: `{original_branch}-task-{uuid}`
+- Example: `main-task-a1b2c3d4-e5f6-7890-abcd-ef1234567890`
+
+## 📊 Session Storage
+
+Sessions are stored in `./results/session-UUID/`:
+
+```
+./results/
+├── session-abc123.../
+│   ├── status.json          # Real-time session status
+│   ├── task-uuid1.txt       # Task 1 output
+│   ├── task-uuid2.txt       # Task 2 output
+│   └── ...
+└── session-def456.../
+    └── ...
+```
+
+## 🛡️ Error Handling
+
+- **Session Tracking**: Failed tasks clearly marked in status
+- **Partial Success**: View results of completed tasks even if others fail
+- **Error Recovery**: Restart failed sessions with new session ID
+- **Safe Cleanup**: Background processes properly managed
+
+## 🔧 Advanced Examples
+
+### Complex Workflow with Worktree
+
+```bash
+# Start isolated coding session
+./claude-parallel-runner.pl --worktree --max-parallel=3 --verbose complex-tasks.json
+
+# Monitor progress
+watch ./claude-parallel-runner.pl --overview
+
+# Check specific task
+./claude-parallel-runner.pl --status SESSION_ID
+
+# View results when complete
+./claude-parallel-runner.pl --results SESSION_ID
+```
+
+### Multiple Sessions Management
+
+```bash
+# Start multiple different projects
+./claude-parallel-runner.pl frontend-tasks.json    # Session 1
+./claude-parallel-runner.pl backend-tasks.json     # Session 2
+./claude-parallel-runner.pl testing-tasks.json     # Session 3
+
+# Monitor all sessions
+./claude-parallel-runner.pl --list
+
+# Global statistics
+./claude-parallel-runner.pl --overview
+```
+
+## 🏗️ Architecture
+
+- **Async Design**: Parent process returns immediately, child runs tasks
+- **Process Forking**: Each task runs in separate Claude Code process
+- **Persistent Storage**: JSON status files + text result files
+- **Real-time Updates**: Status updated as tasks complete
+- **Resource Management**: Optional parallelism limits and cleanup
 
 ## Exit Codes
 
-- **0**: All Claude instances completed successfully
-- **1**: One or more Claude instances failed
+- **0**: Session started successfully (async) or all tasks completed (sync)
+- **1**: One or more tasks failed (sync mode only)
 - **2**: Input/validation error or Claude CLI not found
 
-## Example Output
+## Example Session Flow
 
-```
-Starting 3 Claude instances...
-Starting task 1 (ID: a1b2c3d4): Analyze the config.js file and suggest improvemen...
-Created worktree branch: main-task-a1b2c3d4 at ../claude-worktrees/task-a1b2c3d4
-Starting task 2 (ID: e5f6g7h8): Write unit tests for the auth.js file
-Created worktree branch: main-task-e5f6g7h8 at ../claude-worktrees/task-e5f6g7h8
-Starting task 3 (ID: i9j0k1l2): Refactor utils.js for better readability
-Created worktree branch: main-task-i9j0k1l2 at ../claude-worktrees/task-i9j0k1l2
-Task 1 (ID: a1b2c3d4) completed in 45s with exit code 0
-Branch available for merge: main-task-a1b2c3d4
-Task 2 (ID: e5f6g7h8) completed in 38s with exit code 0  
-Branch available for merge: main-task-e5f6g7h8
-Task 3 (ID: i9j0k1l2) completed in 52s with exit code 0
-Branch available for merge: main-task-i9j0k1l2
+### Starting a Session
+```bash
+$ ./claude-parallel-runner.pl tasks.json
+🚀 Started session: abc123def-456g-789h-ijkl-mnop12345678
+📂 Results directory: results/session-abc123def-456g-789h-ijkl-mnop12345678
 
-==================================================
-EXECUTION SUMMARY
-==================================================
-Total tasks: 3
-Successful: 3
-Failed: 0
-Total time: 52s
-Overall status: SUCCESS
-==================================================
-
-🤖 AI MERGE INSTRUCTIONS
-==================================================
-The following branches are ready for merging:
-
-  • main-task-a1b2c3d4
-  • main-task-e5f6g7h8
-  • main-task-i9j0k1l2
-
-To merge these branches, run:
-  git merge main-task-a1b2c3d4
-  git merge main-task-e5f6g7h8
-  git merge main-task-i9j0k1l2
-
-Or to merge all successful branches at once:
-  git merge main-task-a1b2c3d4 main-task-e5f6g7h8 main-task-i9j0k1l2
-
-After merging, you can clean up the branches with:
-  git branch -d main-task-a1b2c3d4
-  git branch -d main-task-e5f6g7h8
-  git branch -d main-task-i9j0k1l2
-
-==================================================
-
-All Claude instances completed successfully!
+Use these commands to monitor progress:
+  ./claude-parallel-runner.pl --status abc123def-456g-789h-ijkl-mnop12345678
+  ./claude-parallel-runner.pl --results abc123def-456g-789h-ijkl-mnop12345678
 ```
 
-## Requirements
+### Checking Status
+```bash
+$ ./claude-parallel-runner.pl --status abc123def
+Session: abc123def-456g-789h-ijkl-mnop12345678
+Status: running
+Started: Wed Jul 23 15:30:45 2025
+Tasks: 2/3
 
-- **Claude Code CLI**: Must be installed and available in PATH
-- **Perl**: With JSON module support
-- **Unix-like system**: With fork() support
-- **Git**: Required for --worktree mode
-- **Permissions**: Script uses `--dangerously-skip-permissions` flag
+Tasks:
+  ✅ Task 1 (ID: uuid1): completed
+  ⏳ Task 2 (ID: uuid2): running
+  ⏳ Task 3 (ID: uuid3): pending
+```
 
-## Files
+### Viewing Results
+```bash
+$ ./claude-parallel-runner.pl --results abc123def
+Session: abc123def-456g-789h-ijkl-mnop12345678
+==================================================
 
-- `claude-parallel-runner.pl` - Main Perl script
-- `example-prompts.json` - Example input file
-- `claude-parallel-runner-bauplan.md` - German blueprint/design document
+Task 1 (ID: uuid1):
+------------------------------
+[Complete task output here...]
 
-## Security Notes
+Task 2 (ID: uuid2):
+------------------------------
+[Task still running...]
+```
 
-⚠️ **Warning**: This script uses the `--dangerously-skip-permissions` flag, which bypasses Claude Code's permission prompts. Use with caution and ensure you trust all prompts being executed.
+## 🆘 Troubleshooting
 
-## Architecture
+### Common Issues
 
-The script implements a robust parallel execution model:
+1. **"Claude Code CLI not found"**
+   ```bash
+   # Ensure Claude Code is installed and in PATH
+   which claude
+   ```
 
-- **Fork-based parallelism**: Each prompt runs in a separate process
-- **Process pool management**: Optional limit on concurrent processes  
-- **Signal handling**: Proper cleanup and exit code propagation
-- **Real-time monitoring**: Progress updates and completion tracking
+2. **Permission Issues**
+   ```bash
+   # Make script executable
+   chmod +x claude-parallel-runner.pl
+   ```
 
-## Contributing
+3. **Session Not Found**
+   ```bash
+   # Check available sessions
+   ./claude-parallel-runner.pl --list
+   ```
 
-This tool was designed for efficient batch processing of Claude Code tasks. Feel free to extend or modify for your specific use cases.
+### Debug Mode
 
-## License
+```bash
+# Check Perl syntax
+perl -c claude-parallel-runner.pl
 
-See LICENSE file for details.
+# Verbose execution
+./claude-parallel-runner.pl --verbose --sync tasks.json
+```
+
+## ⚠️ Security Notes
+
+This script uses the `--dangerously-skip-permissions` flag, which bypasses Claude Code's permission prompts. Use with caution and ensure you trust all prompts being executed.
+
+## 📄 License
+
+This tool is designed for use with Claude Code for parallel task execution and session management.
+
+## 🤝 Contributing
+
+When working with this codebase, refer to `CLAUDE.md` for detailed architectural information and development guidelines.
